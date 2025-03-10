@@ -1,0 +1,197 @@
+|                                                      |
+|------------------------------------------------------|
+| title: "Lab 3: COVID-19"                             |
+| subtitle: 'Ecosystem Science and Sustainability 330' |
+| author:                                              |
+| \- name: "Kayla Sutton"                              |
+| email: "kayla96\@colostate.edu"                      |
+| format: html                                         |
+
+Question 1
+
+```{r}
+library(tidyverse)
+library(flextable)
+library(zoo)
+```
+
+```{r}
+covid_data <- read_csv('https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv')
+```
+
+Question 2
+
+```{r}
+my.date <- as.Date("2022-02-01")
+my.state <- "Colorado"
+```
+
+```{r}
+co_data <- covid_data %>%
+  filter(state == "Colorado") %>%
+  mutate(fips = str_pad(fips, 5, pad = "0")) %>% 
+  group_by(county) %>%
+  arrange(county, date) %>%
+  mutate(new_cases = cases - lag(cases, default = 0),
+         new_deaths = deaths - lag(deaths, default = 0)) %>%
+  ungroup()
+# Worst counties cumulative cases (as of my.date)
+worst_cum_cases <- co_data %>% 
+  filter(date == my.date) %>%
+  arrange(desc(cases)) %>%
+  slice_head(n = 5) %>%
+  select(county, cases)
+
+# Worst counties new cases (as of my.date)
+worst_new_cases <- co_data %>% 
+  filter(date == my.date) %>%
+  arrange(desc(new_cases)) %>%
+  slice_head(n = 5) %>%
+  select(county, new_cases)
+
+# Tables
+flextable(worst_cum_cases) %>% set_caption("Top 5 Colorado Counties by Cumulative Cases on 2022-02-01")
+flextable(worst_new_cases) %>% set_caption("Top 5 Colorado Counties by New Cases on 2022-02-01")
+```
+
+Question 3
+
+```{r}
+pop_url <- 'https://www2.census.gov/programs-surveys/popest/datasets/2020-2023/counties/totals/co-est2023-alldata.csv'
+pop_data <- read_csv(pop_url)
+
+# Format FIPS columns
+pop_data <- pop_data %>% 
+  mutate(
+    STATE = str_pad(STATE, 2, pad = "0"),
+    COUNTY = str_pad(COUNTY, 3, pad = "0"),
+    FIPS = paste0(STATE, COUNTY)
+  ) %>%
+  filter(COUNTY != "000") %>%
+  select(FIPS, CTYNAME, POPESTIMATE2021)
+glimpse(pop_data)
+```
+
+```{r}
+co_data <- co_data %>%
+  left_join(pop_data, by = c("fips" = "FIPS"))
+
+# Per capita calculations
+co_data <- co_data %>% 
+  mutate(cases_per_capita = cases / POPESTIMATE2021,
+         new_cases_per_capita = new_cases / POPESTIMATE2021,
+         new_deaths_per_capita = new_deaths / POPESTIMATE2021)
+
+# Top 5 by cumulative cases per capita
+top_cum_percap <- co_data %>%
+  filter(date == my.date) %>%
+  arrange(desc(cases_per_capita)) %>%
+  slice_head(n = 5)
+
+# Top 5 by new cases per capita
+top_new_percap <- co_data %>%
+  filter(date == my.date) %>%
+  arrange(desc(new_cases_per_capita)) %>%
+  slice_head(n = 5)
+
+# Flextables
+flextable(top_cum_percap) %>% set_caption("Top 5 Counties by Per Capita Cumulative Cases on 2022-02-01")
+flextable(top_new_percap) %>% set_caption("Top 5 Counties by Per Capita New Cases on 2022-02-01")
+```
+
+Question 4
+
+```{r}
+last_14_days <- co_data %>%
+  filter(date > my.date - 14 & date <= my.date)
+
+summary_14d <- last_14_days %>% 
+  group_by(county, POPESTIMATE2021) %>% 
+  summarize(new_cases_14d = sum(new_cases), .groups = 'drop') %>% 
+  mutate(new_cases_per_100k = (new_cases_14d / POPESTIMATE2021) * 100000)
+
+# Top 5 counties in 14-day new cases per 100k
+flextable(summary_14d %>% arrange(desc(new_cases_per_100k)) %>% slice_head(n = 5)) %>% 
+  set_caption("Top 5 Counties by New Cases per 100k in the Past 14 Days")
+
+# Counties exceeding the threshold
+watchlist_counties <- summary_14d %>% filter(new_cases_per_100k > 100)
+nrow(watchlist_counties)
+```
+
+Question 5
+
+```{r}
+covid_2021 <- co_data %>% 
+  filter(date >= as.Date("2021-01-01") & date <= as.Date("2021-12-31")) %>% 
+  group_by(county, POPESTIMATE2021) %>%
+  summarize(total_covid_deaths = sum(new_deaths), .groups = 'drop')
+
+# Let's pretend we have total deaths data for all causes in 2021:
+# Adding dummy total deaths data
+covid_2021 <- covid_2021 %>%
+  mutate(total_deaths_all_causes = POPESTIMATE2021 * 0.01,
+    covid_death_pct = total_covid_deaths / total_deaths_all_causes * 100)
+# Plot counties where COVID deaths were 20%+ of total deaths
+covid_2021 %>% 
+  filter(covid_death_pct >= 20) %>%
+  ggplot(aes(x = reorder(county, covid_death_pct), y = covid_death_pct)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Counties Where COVID Deaths Were ≥ 20% of Total Deaths in 2021",
+       x = "County", y = "COVID Deaths (% of Total Deaths)")
+
+```
+
+Question 6
+
+```{r}
+multi_state_data <- covid_data %>%
+  filter(state %in% c("New York", "Colorado", "Alabama", "Ohio")) %>%
+  group_by(state, date) %>%
+  summarize(cases = sum(cases), .groups = 'drop') %>%
+  arrange(state, date) %>%
+  group_by(state) %>%
+  mutate(new_cases = cases - lag(cases, default = 0),
+         roll7 = zoo::rollmean(new_cases, 7, fill = NA, align = 'right'))
+
+# Facet plot
+ggplot(multi_state_data, aes(x = date)) +
+  geom_col(aes(y = new_cases), fill = "gray") +
+  geom_line(aes(y = roll7), color = "blue", linewidth = 1) +
+  facet_wrap(~ state, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Daily New Cases and 7-Day Rolling Mean", x = "Date", y = "Cases")
+```
+
+Question 7
+
+```{r}
+county_centroids <- read_csv('https://raw.githubusercontent.com/mikejohnson51/csu-ess-330/refs/heads/main/resources/county-centroids.csv')
+
+covid_with_coords <- covid_data %>%
+  filter(!is.na(fips)) %>%
+  mutate(fips = str_pad(fips, 5, pad = "0")) %>%
+  left_join(county_centroids, by = c("fips" = "fips"))
+
+weighted_center <- covid_with_coords %>%
+  group_by(date) %>%
+  summarize(
+    total_cases = sum(cases, na.rm = TRUE),
+    LNG = weighted.mean(LON, cases, na.rm = TRUE),
+    LAT = weighted.mean(LAT, cases, na.rm = TRUE),
+    month = format(date, "%m")
+  )
+
+```
+
+```{r}
+
+# Plot
+ggplot() +
+  borders("state", fill = "gray90", colour = "white") +
+  geom_point(data = weighted_center, aes(x = LNG, y = LAT, size = total_cases, color = month), alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "COVID-19 Weighted Mean Center Movement (Cases)",
+       x = "Longitude", y = "Latitude")
+```
